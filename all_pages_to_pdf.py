@@ -173,12 +173,12 @@ def main():
         page_count += 1
         print(f"Captured page {page_count}")
 
-        # ⏱️ Attendi che la pagina cambi
-        time.sleep(1.0)
+        # ⏱️ Wait for the page to change
+        time.sleep(5.0)
 
     print(f"Finished. Total pages: {page_count}")
 
-    # Crea PDF finale
+    # Create final PDF
     images_to_pdf(folder, output_name)
 
 if __name__ == "__main__":
