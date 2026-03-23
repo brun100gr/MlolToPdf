@@ -9,10 +9,10 @@ from PIL import Image
 import hashlib
 import time
 
-ICON_FILE = "arrow.png"   # <-- il tuo file icona
+ICON_FILE = "arrow.png"   # <-- your icon file
 SCREENSHOT_DIR = "screenshots"
 
-# pixel da tagliare per ciascun lato
+# pixels to trim from each side
 TRIM_TOP = 140
 TRIM_BOTTOM = 90
 TRIM_LEFT = 160
@@ -20,13 +20,13 @@ TRIM_RIGHT = 100
 
 
 def file_md5(path):
-    """Calcola l'MD5 del file indicato."""
+    """Compute the MD5 of the given file."""
     with open(path, "rb") as f:
         return hashlib.md5(f.read()).hexdigest()
 
 
 def save_screenshot(screenshot):
-    """Salva l'immagine con nome progressivo nella cartella SCREENSHOT_DIR."""
+    """Save the image with an incremental name inside SCREENSHOT_DIR."""
     os.makedirs(SCREENSHOT_DIR, exist_ok=True)
 
     existing_files = [
@@ -41,7 +41,7 @@ def save_screenshot(screenshot):
 
     screenshot_bgr = cv2.cvtColor(screenshot, cv2.COLOR_RGB2BGR)
     cv2.imwrite(path, screenshot_bgr)
-    print(f"Screenshot salvato come {path}")
+    print(f"Screenshot saved as {path}")
 
     return path
 
@@ -51,7 +51,7 @@ def get_virtualbox_window():
     wins = [w for w in all_windows if "VirtualBox" in w.title]
 
     if not wins:
-        raise RuntimeError("Finestra VirtualBox non trovata.")
+        raise RuntimeError("VirtualBox window not found.")
 
     return wins[0]
 
@@ -77,14 +77,14 @@ def screenshot_window(win):
 def find_icon_in_image(screenshot, icon_file):
     icon = cv2.imread(icon_file)
     if icon is None:
-        raise RuntimeError("Impossibile caricare l’icona: " + icon_file)
+        raise RuntimeError("Unable to load icon: " + icon_file)
 
     res = cv2.matchTemplate(screenshot, icon, cv2.TM_CCOEFF_NORMED)
     _, max_val, _, max_loc = cv2.minMaxLoc(res)
 
     print("Match:", max_val)
 
-    if max_val < 0.75:  # soglia di match
+    if max_val < 0.75:  # match threshold
         del icon
         return None
 
@@ -97,47 +97,48 @@ def process_page(prev_md5=None):
     win = get_virtualbox_window()
     screenshot, win_x, win_y = screenshot_window(win)
 
-    # ritaglio dei bordi
+    # trim borders
     height, width, _ = screenshot.shape
     screenshot_trimmed = screenshot[
         TRIM_TOP:height - TRIM_BOTTOM,
         TRIM_LEFT:width - TRIM_RIGHT
     ]
 
-    # salva screenshot e calcola md5
+    # save screenshot and compute md5
     path = save_screenshot(screenshot_trimmed)
     current_md5 = file_md5(path)
 
-    # confronta con la pagina precedente
+    # compare with previous page
     if prev_md5 and current_md5 == prev_md5:
-        print("Pagina identica alla precedente. Fine documento.")
-        os.remove(path)  # elimina l’ultima immagine duplicata
+        print("Page identical to the previous one. End of document.")
+        os.remove(path)  # delete the last duplicate image
         return False, prev_md5
 
     found = find_icon_in_image(screenshot, ICON_FILE)
     if not found:
-        print("Icona non trovata nella finestra.")
+        print("Icon not found in the window.")
         return False, current_md5
 
     (px, py), w, h = found
     click_x = win_x + px + w // 2
     click_y = win_y + py + h // 2
 
-    print("Click su:", click_x, click_y)
+    print("Clicking at:", click_x, click_y)
     pyautogui.click(click_x, click_y)
-    print("Icona cliccata!")
+    print("Icon clicked!")
 
     return True, current_md5
 
+
 def images_to_pdf(folder_path, output_pdf="output.pdf"):
-    # Prende tutti i file PNG nella cartella
+    # Get all PNG files in the folder
     files = [f for f in os.listdir(folder_path) if f.lower().endswith(".png")]
 
     if not files:
-        print("Nessuna immagine PNG trovata nella cartella.")
+        print("No PNG images found in the folder.")
         return
 
-    # Ordina i file in ordine alfabetico (page_0001.png, page_0002.png, ecc.)
+    # Sort files alphabetically (page_0001.png, page_0002.png, etc.)
     files.sort()
 
     images = []
@@ -146,18 +147,20 @@ def images_to_pdf(folder_path, output_pdf="output.pdf"):
         img = Image.open(path).convert("RGB")
         images.append(img)
 
-    # Salva tutte le immagini in un unico PDF
+    # Save all images into a single PDF
     output_path = os.path.join(folder_path, output_pdf)
     images[0].save(output_path, save_all=True, append_images=images[1:])
-    print(f"PDF creato con successo: {output_path}")
+    print(f"PDF successfully created: {output_path}")
+
 
 def main():
-    # Create pdf from all images
+    # Create PDF from all images
     folder = sys.argv[1]
     output_name = sys.argv[2] if len(sys.argv) >= 3 else "output.pdf"
 
     images_to_pdf(folder, output_name)
- 
+
+
 if __name__ == "__main__":
     main()
 
