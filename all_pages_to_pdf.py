@@ -1,13 +1,14 @@
-import os
 import cv2
-import sys
+import hashlib
 import numpy as np
+import os
 import pyautogui
 import pywinctl as pwc
+import sys
+import time
+from io import BytesIO
 from mss import mss
 from PIL import Image
-import hashlib
-import time
 
 ICON_FILE = "arrow.png"   # <-- your icon file
 SCREENSHOT_DIR = "screenshots"
@@ -18,6 +19,7 @@ TRIM_BOTTOM = 90
 TRIM_LEFT = 160
 TRIM_RIGHT = 100
 
+pdf_images = []
 
 def file_md5(path):
     """Compute the MD5 of the given file."""
@@ -92,6 +94,24 @@ def find_icon_in_image(screenshot, icon_file):
     del icon
     return max_loc, w, h
 
+def image_md5_small(image_np):
+    small = cv2.resize(image_np, (64, 64))
+    gray = cv2.cvtColor(small, cv2.COLOR_RGB2GRAY)
+    return hashlib.md5(gray.tobytes()).hexdigest()
+
+def add_to_pdf(image_np):
+    # Convert numpy → PIL (grayscale consigliato)
+    img = Image.fromarray(image_np).convert("L")
+
+    # Comprimi in JPEG in memoria
+    buffer = BytesIO()
+    img.save(buffer, format="JPEG", quality=50)
+    buffer.seek(0)
+
+    # Riapri come immagine PIL (necessario per PDF)
+    compressed_img = Image.open(buffer)
+
+    pdf_images.append(compressed_img)
 
 def process_page(prev_md5=None):
     win = get_virtualbox_window()
@@ -104,14 +124,14 @@ def process_page(prev_md5=None):
         TRIM_LEFT:width - TRIM_RIGHT
     ]
 
-    # save screenshot and compute md5
-    path = save_screenshot(screenshot_trimmed)
-    current_md5 = file_md5(path)
+    add_to_pdf(screenshot_trimmed)
+
+    # compute page md5
+    current_md5 = image_md5_small(screenshot_trimmed)
 
     # compare with previous page
     if prev_md5 and current_md5 == prev_md5:
         print("Page identical to the previous one. End of document.")
-        os.remove(path)  # delete the last duplicate image
         return False, prev_md5
 
     found = find_icon_in_image(screenshot, ICON_FILE)
@@ -129,40 +149,26 @@ def process_page(prev_md5=None):
 
     return True, current_md5
 
-
-def images_to_pdf(folder_path, output_pdf="output.pdf"):
-    # Get all PNG files in the folder
-    files = [f for f in os.listdir(folder_path) if f.lower().endswith(".png")]
-
-    if not files:
-        print("No PNG images found in the folder.")
+def save_pdf(output_path):
+    if not pdf_images:
+        print("No images to save.")
         return
 
-    # Sort files alphabetically (page_0001.png, page_0002.png, etc.)
-    files.sort()
+    pdf_images[0].save(
+        output_path,
+        save_all=True,
+        append_images=pdf_images[1:]
+    )
 
-    images = []
-    for filename in files:
-        path = os.path.join(folder_path, filename)
-        img = Image.open(path).convert("RGB")
-        images.append(img)
-
-    # Save all images into a single PDF
-    output_path = os.path.join(folder_path, output_pdf)
-    images[0].save(output_path, save_all=True, append_images=images[1:])
-    print(f"PDF successfully created: {output_path}")
-
+    print(f"PDF created: {output_path}")
 
 def main():
-    folder = sys.argv[1] if len(sys.argv) >= 2 else SCREENSHOT_DIR
-    output_name = sys.argv[2] if len(sys.argv) >= 3 else "output.pdf"
-
-    os.makedirs(folder, exist_ok=True)
+    output_name = sys.argv[1] if len(sys.argv) >= 2 else "output.pdf"
 
     prev_md5 = None
     page_count = 0
 
-    print("Starting page capture...")
+    print("Starting capture...")
 
     while True:
         success, prev_md5 = process_page(prev_md5)
@@ -173,13 +179,11 @@ def main():
         page_count += 1
         print(f"Captured page {page_count}")
 
-        # ⏱️ Wait for the page to change
-        time.sleep(5.0)
+        time.sleep(3.0)
 
     print(f"Finished. Total pages: {page_count}")
 
-    # Create final PDF
-    images_to_pdf(folder, output_name)
+    save_pdf(output_name)
 
 if __name__ == "__main__":
     main()
