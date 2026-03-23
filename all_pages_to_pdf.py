@@ -154,12 +154,32 @@ def images_to_pdf(folder_path, output_pdf="output.pdf"):
 
 
 def main():
-    # Create PDF from all images
-    folder = sys.argv[1]
+    folder = sys.argv[1] if len(sys.argv) >= 2 else SCREENSHOT_DIR
     output_name = sys.argv[2] if len(sys.argv) >= 3 else "output.pdf"
 
-    images_to_pdf(folder, output_name)
+    os.makedirs(folder, exist_ok=True)
 
+    prev_md5 = None
+    page_count = 0
+
+    print("Starting page capture...")
+
+    while True:
+        success, prev_md5 = process_page(prev_md5)
+
+        if not success:
+            break
+
+        page_count += 1
+        print(f"Captured page {page_count}")
+
+        # ⏱️ Attendi che la pagina cambi
+        time.sleep(1.0)
+
+    print(f"Finished. Total pages: {page_count}")
+
+    # Crea PDF finale
+    images_to_pdf(folder, output_name)
 
 if __name__ == "__main__":
     main()
