@@ -66,6 +66,53 @@ def find_icon_in_image(screenshot, icon_file):
     del icon
     return max_loc, w, h
 
+def has_orange_box(image_np):
+    """Detect if a large orange rectangular border is present."""
+    hsv = cv2.cvtColor(image_np, cv2.COLOR_RGB2HSV)
+
+    # Narrower orange range (more strict)
+    lower_orange = np.array([10, 150, 150])
+    upper_orange = np.array([25, 255, 255])
+
+    mask = cv2.inRange(hsv, lower_orange, upper_orange)
+
+    # Clean noise
+    kernel = np.ones((5, 5), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+
+    # Find contours
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+
+        # Ignore small stuff (noise, text edges, etc.)
+        if area < 500:
+            continue
+
+        x, y, w, h = cv2.boundingRect(cnt)
+
+        # Heuristic: rectangle-like shape
+        aspect_ratio = w / float(h)
+
+        if 0.3 < aspect_ratio < 5:  # not too thin
+            # Also require it to be somewhat large
+            if w > 100 and h > 50:
+                return True
+
+    return False
+
+def wait_until_clean(win):
+    """Wait until the orange rectangle disappears."""
+    while True:
+        screenshot, win_x, win_y = screenshot_window(win)
+
+        if not has_orange_box(screenshot):
+            return screenshot, win_x, win_y
+
+        print("Orange box detected, waiting...")
+        time.sleep(0.5)
+
 def image_md5_small(image_np):
     """Compute an MD5 hash of a small grayscale version of the image."""
     small = cv2.resize(image_np, (64, 64))
@@ -83,7 +130,8 @@ def add_to_pdf(image_np):
 def process_page(prev_md5=None):
     """Capture a page, add it to PDF, and click the icon to go to the next page."""
     win = get_virtualbox_window()
-    screenshot, win_x, win_y = screenshot_window(win)
+    # Wait until the page is clean (no orange box)
+    screenshot, win_x, win_y = wait_until_clean(win)
 
     # Trim borders
     height, width, _ = screenshot.shape
@@ -148,7 +196,7 @@ def main():
         page_count += 1
         print(f"Captured page {page_count}")
 
-        time.sleep(3.0)
+        time.sleep(0.5)
 
     print(f"Finished. Total pages: {page_count}")
 
