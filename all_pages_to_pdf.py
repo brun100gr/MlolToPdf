@@ -1,7 +1,6 @@
 import cv2
 import hashlib
 import numpy as np
-import os
 import pyautogui
 import pywinctl as pwc
 import sys
@@ -11,9 +10,8 @@ from mss import mss
 from PIL import Image
 
 ICON_FILE = "arrow.png"   # <-- your icon file
-SCREENSHOT_DIR = "screenshots"
 
-# pixels to trim from each side
+# Pixels to trim from each side
 TRIM_TOP = 140
 TRIM_BOTTOM = 90
 TRIM_LEFT = 160
@@ -21,34 +19,8 @@ TRIM_RIGHT = 100
 
 pdf_images = []
 
-def file_md5(path):
-    """Compute the MD5 of the given file."""
-    with open(path, "rb") as f:
-        return hashlib.md5(f.read()).hexdigest()
-
-
-def save_screenshot(screenshot):
-    """Save the image with an incremental name inside SCREENSHOT_DIR."""
-    os.makedirs(SCREENSHOT_DIR, exist_ok=True)
-
-    existing_files = [
-        f for f in os.listdir(SCREENSHOT_DIR)
-        if f.startswith("page_") and f.endswith(".png")
-    ]
-    existing_numbers = [int(f[5:9]) for f in existing_files if f[5:9].isdigit()]
-    next_number = max(existing_numbers, default=0) + 1
-
-    filename = f"page_{next_number:04d}.png"
-    path = os.path.join(SCREENSHOT_DIR, filename)
-
-    screenshot_bgr = cv2.cvtColor(screenshot, cv2.COLOR_RGB2BGR)
-    cv2.imwrite(path, screenshot_bgr)
-    print(f"Screenshot saved as {path}")
-
-    return path
-
-
 def get_virtualbox_window():
+    """Find the VirtualBox window."""
     all_windows = pwc.getAllWindows()
     wins = [w for w in all_windows if "VirtualBox" in w.title]
 
@@ -57,8 +29,8 @@ def get_virtualbox_window():
 
     return wins[0]
 
-
 def screenshot_window(win):
+    """Take a screenshot of the given window."""
     x, y, w, h = win.left, win.top, win.width, win.height
 
     with mss() as sct:
@@ -75,8 +47,8 @@ def screenshot_window(win):
     del raw
     return screenshot_np, x, y
 
-
 def find_icon_in_image(screenshot, icon_file):
+    """Locate the icon inside the screenshot using template matching."""
     icon = cv2.imread(icon_file)
     if icon is None:
         raise RuntimeError("Unable to load icon: " + icon_file)
@@ -95,29 +67,25 @@ def find_icon_in_image(screenshot, icon_file):
     return max_loc, w, h
 
 def image_md5_small(image_np):
+    """Compute an MD5 hash of a small grayscale version of the image."""
     small = cv2.resize(image_np, (64, 64))
     gray = cv2.cvtColor(small, cv2.COLOR_RGB2GRAY)
     return hashlib.md5(gray.tobytes()).hexdigest()
 
 def add_to_pdf(image_np):
-    # Convert numpy → PIL (grayscale consigliato)
-    img = Image.fromarray(image_np).convert("L")
-
-    # Comprimi in JPEG in memoria
+    """Convert a numpy array to a PIL image, compress it, and add it to the PDF list."""
+    img = Image.fromarray(image_np).convert("L")  # grayscale
     buffer = BytesIO()
     img.save(buffer, format="JPEG", quality=50)
     buffer.seek(0)
-
-    # Riapri come immagine PIL (necessario per PDF)
-    compressed_img = Image.open(buffer)
-
-    pdf_images.append(compressed_img)
+    pdf_images.append(Image.open(buffer))
 
 def process_page(prev_md5=None):
+    """Capture a page, add it to PDF, and click the icon to go to the next page."""
     win = get_virtualbox_window()
     screenshot, win_x, win_y = screenshot_window(win)
 
-    # trim borders
+    # Trim borders
     height, width, _ = screenshot.shape
     screenshot_trimmed = screenshot[
         TRIM_TOP:height - TRIM_BOTTOM,
@@ -126,10 +94,10 @@ def process_page(prev_md5=None):
 
     add_to_pdf(screenshot_trimmed)
 
-    # compute page md5
+    # Compute page MD5
     current_md5 = image_md5_small(screenshot_trimmed)
 
-    # compare with previous page
+    # Compare with previous page
     if prev_md5 and current_md5 == prev_md5:
         print("Page identical to the previous one. End of document.")
         return False, prev_md5
@@ -150,6 +118,7 @@ def process_page(prev_md5=None):
     return True, current_md5
 
 def save_pdf(output_path):
+    """Save all captured images into a single PDF file."""
     if not pdf_images:
         print("No images to save.")
         return
@@ -187,4 +156,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
