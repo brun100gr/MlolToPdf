@@ -19,6 +19,20 @@ TRIM_RIGHT = 100
 
 pdf_images = []
 
+def rgb_hex_to_hsv(hex_color):
+    """Converte un colore RGB esadecimale (es: 'ffff13') in HSV OpenCV."""
+    hex_color = hex_color.lstrip('#')
+    r = int(hex_color[0:2], 16)
+    g = int(hex_color[2:4], 16)
+    b = int(hex_color[4:6], 16)
+    rgb = np.uint8([[[r, g, b]]])
+    hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
+    return hsv[0][0]
+
+# Esempio d'uso:
+hsv = rgb_hex_to_hsv("ffff13")
+print(hsv)  # Output: [ 30 236 255]
+
 def get_virtualbox_window():
     """Find the VirtualBox window."""
     all_windows = pwc.getAllWindows()
@@ -67,51 +81,78 @@ def find_icon_in_image(screenshot, icon_file):
     return max_loc, w, h
 
 def has_orange_box(image_np):
-    """Detect if a large orange rectangular border is present."""
+    """Detect orange UI highlight (even if not a closed rectangle)."""
     hsv = cv2.cvtColor(image_np, cv2.COLOR_RGB2HSV)
 
-    # Narrower orange range (more strict)
-    lower_orange = np.array([10, 150, 150])
-    upper_orange = np.array([25, 255, 255])
+    # Dopo la conversione in HSV l'arancione #FFA500 dibenta giallo FFFF13
+    lower_yellow = np.array([18, 255, 255])
+    upper_yellow = np.array([20, 255, 255])
 
-    mask = cv2.inRange(hsv, lower_orange, upper_orange)
+    # Dopo la conversione in HSV
+    cv2.imwrite(f"debug_hsv_{int(time.time()*1000)}.png", hsv)
+    print("HSV pixel (189,719):", hsv[189, 719])  # Cambia con coordinate interne al rettangolo
 
-    # Clean noise
-    kernel = np.ones((5, 5), np.uint8)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+    mask = cv2.inRange(hsv, lower_yellow, upper_yellow)
+    cv2.imwrite(f"mask_debug_{int(time.time()*1000)}.png", mask)
 
-    # Find contours
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # Remove noise - there is no need for this step, no noise present
+    #kernel = np.ones((3, 3), np.uint8)
+    #mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+    cv2.imwrite(f"mask_debug_{int(time.time()*1000)}.png", mask)  # Salva la maschera con timestamp
 
-    for cnt in contours:
-        area = cv2.contourArea(cnt)
+    # Count orange pixels
+    yellow_hvs_pixels = np.sum(mask > 0)
 
-        # Ignore small stuff (noise, text edges, etc.)
-        if area < 500:
-            continue
+    if yellow_hvs_pixels > 0:
+        print("----> yellow_hvs_pixels:", yellow_hvs_pixels)
 
-        x, y, w, h = cv2.boundingRect(cnt)
+    if yellow_hvs_pixels < 200:
+        return False  # too small → ignore
 
-        # Heuristic: rectangle-like shape
-        aspect_ratio = w / float(h)
+    # Detect long lines (edges of rectangle)
+    edges = cv2.Canny(mask, 50, 150)
 
-        if 0.3 < aspect_ratio < 5:  # not too thin
-            # Also require it to be somewhat large
-            if w > 100 and h > 50:
-                return True
+    lines = cv2.HoughLinesP(
+        edges,
+        1,
+        np.pi / 180,
+        threshold=50,
+        minLineLength=50,
+        maxLineGap=10
+    )
 
-    return False
+    if lines is None:
+        return False
+
+    # Count long lines
+    long_lines = 0
+    for line in lines:
+        x1, y1, x2, y2 = line[0]
+        length = np.hypot(x2 - x1, y2 - y1)
+
+        if length > 80:
+            long_lines += 1
+
+    print("long_lines:", long_lines)
+
+    # If we detect at least 2-3 long lines → likely the rectangle
+    return long_lines >= 2
 
 def wait_until_clean(win):
-    """Wait until the orange rectangle disappears."""
     while True:
         screenshot, win_x, win_y = screenshot_window(win)
 
-        if not has_orange_box(screenshot):
+        height, width, _ = screenshot.shape
+        screenshot_trimmed = screenshot[
+            TRIM_TOP:height - TRIM_BOTTOM,
+            TRIM_LEFT:width - TRIM_RIGHT
+        ]
+
+        if not has_orange_box(screenshot_trimmed):
             return screenshot, win_x, win_y
 
         print("Orange box detected, waiting...")
-        time.sleep(0.5)
+        time.sleep(0.1)
 
 def image_md5_small(image_np):
     """Compute an MD5 hash of a small grayscale version of the image."""
@@ -127,11 +168,12 @@ def add_to_pdf(image_np):
     buffer.seek(0)
     pdf_images.append(Image.open(buffer))
 
-def process_page(prev_md5=None):
+def process_page(prev_md5=None, page_num=1):
     """Capture a page, add it to PDF, and click the icon to go to the next page."""
     win = get_virtualbox_window()
     # Wait until the page is clean (no orange box)
     screenshot, win_x, win_y = wait_until_clean(win)
+    cv2.imwrite(f"screenshot_{page_num}.png", cv2.cvtColor(screenshot, cv2.COLOR_RGB2BGR))
 
     # Trim borders
     height, width, _ = screenshot.shape
@@ -139,6 +181,9 @@ def process_page(prev_md5=None):
         TRIM_TOP:height - TRIM_BOTTOM,
         TRIM_LEFT:width - TRIM_RIGHT
     ]
+
+    # Salva l'immagine su file
+    cv2.imwrite(f"screenshot_trimmed_{page_num}.png", cv2.cvtColor(screenshot_trimmed, cv2.COLOR_RGB2BGR))
 
     add_to_pdf(screenshot_trimmed)
 
@@ -188,7 +233,7 @@ def main():
     print("Starting capture...")
 
     while True:
-        success, prev_md5 = process_page(prev_md5)
+        success, prev_md5 = process_page(prev_md5, page_count + 1)
 
         if not success:
             break
@@ -196,7 +241,7 @@ def main():
         page_count += 1
         print(f"Captured page {page_count}")
 
-        time.sleep(0.5)
+        time.sleep(1.3)
 
     print(f"Finished. Total pages: {page_count}")
 
