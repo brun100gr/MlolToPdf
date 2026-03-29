@@ -2,66 +2,102 @@ import cv2
 import numpy as np
 from mss import mss
 
-drawing = False
-done = False
-ix, iy = -1, -1
-fx, fy = -1, -1
+# =========================
+# Funzione generica selezione
+# =========================
+def select_rectangle(img, message):
+    drawing = False
+    done = False
+    ix, iy = -1, -1
+    fx, fy = -1, -1
+    img_copy = img.copy()
 
-def draw_rectangle(event, x, y, flags, param):
-    global ix, iy, fx, fy, drawing, img, img_copy, done
+    def draw(event, x, y, flags, param):
+        nonlocal ix, iy, fx, fy, drawing, done, img
 
-    if event == cv2.EVENT_LBUTTONDOWN:
-        drawing = True
-        ix, iy = x, y
+        if event == cv2.EVENT_LBUTTONDOWN:
+            drawing = True
+            ix, iy = x, y
 
-    elif event == cv2.EVENT_MOUSEMOVE:
-        if drawing:
-            img = img_copy.copy()
-            cv2.rectangle(img, (ix, iy), (x, y), (0, 255, 0), 2)
+        elif event == cv2.EVENT_MOUSEMOVE:
+            if drawing:
+                img = img_copy.copy()
+                cv2.rectangle(img, (ix, iy), (x, y), (0, 255, 0), 2)
 
-    elif event == cv2.EVENT_LBUTTONUP:
-        drawing = False
-        fx, fy = x, y
+        elif event == cv2.EVENT_LBUTTONUP:
+            drawing = False
+            fx, fy = x, y
+            done = True
 
-        # Normalizza coordinate
-        x1, y1 = min(ix, fx), min(iy, fy)
-        x2, y2 = max(ix, fx), max(iy, fy)
+    # Finestra fullscreen
+    cv2.namedWindow(message, cv2.WINDOW_NORMAL)
+    cv2.setWindowProperty(message, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+    cv2.setMouseCallback(message, draw)
 
-        vertices = [
-            (x1, y1),
-            (x2, y1),
-            (x2, y2),
-            (x1, y2)
-        ]
+    while True:
+        cv2.imshow(message, img)
 
-        print("\nVertici selezionati:")
-        for v in vertices:
-            print(v)
+        if done:
+            break
 
-        done = True  # 👈 fa uscire dal loop
+        if cv2.waitKey(1) & 0xFF == 27:
+            cv2.destroyAllWindows()
+            exit()
 
-# Screenshot
+    cv2.destroyAllWindows()
+
+    # Normalizza coordinate
+    x1, y1 = min(ix, fx), min(iy, fy)
+    x2, y2 = max(ix, fx), max(iy, fy)
+
+    return x1, y1, x2, y2
+
+
+# =========================
+# Screenshot iniziale
+# =========================
 with mss() as sct:
     monitor = sct.monitors[1]
     screenshot = sct.grab(monitor)
 
 img = np.array(screenshot)
 img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
-img_copy = img.copy()
 
-# Fullscreen
-cv2.namedWindow("Seleziona area", cv2.WINDOW_NORMAL)
-cv2.setWindowProperty("Seleziona area", cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+# =========================
+# STEP 1 - Selezione pagina
+# =========================
+print("\nSTEP 1: Seleziona l'area della PAGINA (trascina il mouse)")
 
-cv2.setMouseCallback("Seleziona area", draw_rectangle)
+x1, y1, x2, y2 = select_rectangle(img.copy(), "Seleziona AREA PAGINA")
 
-while True:
-    cv2.imshow("Seleziona area", img)
+page_vertices = [
+    (x1, y1),
+    (x2, y1),
+    (x2, y2),
+    (x1, y2)
+]
 
-    if done:
-        break  # 👈 esce subito quando hai finito
+print("\nVertici pagina:")
+for v in page_vertices:
+    print(v)
 
-    if cv2.waitKey(1) & 0xFF == 27:
-        break
+# =========================
+# STEP 2 - Selezione simbolo
+# =========================
+print("\nSTEP 2: Seleziona il SIMBOLO (trascina il mouse)")
 
-cv2.destroyAllWindows()
+sx1, sy1, sx2, sy2 = select_rectangle(img.copy(), "Seleziona SIMBOLO")
+
+# Calcolo centro
+cx = (sx1 + sx2) // 2
+cy = (sy1 + sy2) // 2
+
+print("\nCentro simbolo:")
+print((cx, cy))
+
+# =========================
+# RISULTATO FINALE
+# =========================
+print("\n--- RISULTATO ---")
+print("Area pagina (vertici):", page_vertices)
+print("Centro simbolo:", (cx, cy))
