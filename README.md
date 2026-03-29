@@ -9,7 +9,7 @@ sudo apt install python3-pip
 ´´´python3 -m venv venv´´´
 
 ### Virtual Env activation
-´´´source venv\Scripts\activate´´´
+´´´source venv/bin/activate´´´
 
 ### Virtual Env deactivation
 ´´´deactivate´´´
