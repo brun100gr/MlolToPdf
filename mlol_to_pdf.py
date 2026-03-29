@@ -2,7 +2,7 @@
 capture_to_pdf.py — Automatic capture of pages from a VirtualBox window and save to PDF.
 
 Usage:
-    python capture_to_pdf.py [output.pdf] [--debug] [--delay 1.3] [--max-pages 999]
+    python capture_to_pdf.py [output.pdf] [--debug] [--delay 0.3] [--max-pages 2000]
                              [--icon arrow.png] [--quality 50]
                              [--trim-top 140] [--trim-bottom 90] [--trim-left 160] [--trim-right 100]
                              [--split N]
@@ -53,7 +53,7 @@ class Config:
     trim_left: int = 160
     trim_right: int = 100
 
-    # Minimum confidence score (0-1) for template matching to accept a hit.
+    # Minimum confidence score (0–1) for template matching to accept a hit.
     # Lower values tolerate more visual variation but risk false positives.
     match_threshold: float = 0.75
 
@@ -70,7 +70,7 @@ class Config:
 
     # Seconds to wait between clicking the "next page" icon and capturing
     # the next page. Increase if the VM is slow to animate page transitions.
-    delay: float = 1.3
+    delay: float = 0.3
 
     # Safety cap: stop after this many pages even if the end is not detected.
     max_pages: int = 2000
@@ -104,7 +104,7 @@ def get_virtualbox_window(title_hint: str = "VirtualBox", title_filter: str = "m
 
     Raises RuntimeError if no VirtualBox window is found at all.
     """
-    wins = [w for w in pwc.getAllWindows() if title_hint in w.title]
+    wins = [w for w in pwc.getAllWindows() if w.title and title_hint in w.title]
     if not wins:
         raise RuntimeError(f"No window with '{title_hint}' in the title found.")
     if title_filter:
@@ -123,11 +123,11 @@ def screenshot_window(win) -> tuple[np.ndarray, int, int]:
     Capture the full contents of `win` using mss (a fast screen-capture lib).
 
     Returns:
-        image   - HxWx3 uint8 array in RGB colour order.
-        win_x   - absolute X coordinate of the window's top-left corner on
+        image   – H×W×3 uint8 array in RGB colour order.
+        win_x   – absolute X coordinate of the window's top-left corner on
                   the physical display (needed later to convert relative icon
                   coordinates into absolute click coordinates).
-        win_y   - absolute Y coordinate of the window's top-left corner.
+        win_y   – absolute Y coordinate of the window's top-left corner.
     """
     with mss() as sct:
         raw = sct.grab({
@@ -170,7 +170,7 @@ def has_orange_box(image_np: np.ndarray, cfg: Config, debug_suffix: str = "") ->
 
     Detection strategy:
       1. Convert the image to HSV colour space. Orange (#FFA500) maps to a
-         narrow yellow-ish hue band in HSV (approximately H=18-25).
+         narrow yellow-ish hue band in HSV (approximately H=18–25).
       2. Threshold to a binary mask of "orange-ish" pixels.
       3. If too few such pixels exist, the box is absent → return False early.
       4. Run Canny edge detection and Hough line transform on the mask.
@@ -231,9 +231,9 @@ def wait_until_clean(win, cfg: Config, page_num: int):
     trim again.
 
     Returns:
-        screenshot  - full, untrimmed window image (used for icon search).
-        trimmed     - cropped document area (used for hashing and PDF export).
-        win_x, win_y - window origin on the physical display.
+        screenshot  – full, untrimmed window image (used for icon search).
+        trimmed     – cropped document area (used for hashing and PDF export).
+        win_x, win_y – window origin on the physical display.
     """
     while True:
         screenshot, win_x, win_y = screenshot_window(win)
@@ -346,10 +346,10 @@ def process_page(
       5. Find the "next" arrow icon and click it.
 
     Returns:
-        success     - False when capture should stop (duplicate page or
+        success     – False when capture should stop (duplicate page or
                       icon not found), True to keep going.
-        current_md5 - hash of this page (passed as prev_md5 on the next call).
-        jpeg_bytes  - compressed page image, or None if this was a duplicate.
+        current_md5 – hash of this page (passed as prev_md5 on the next call).
+        jpeg_bytes  – compressed page image, or None if this was a duplicate.
     """
     win = get_virtualbox_window()
     # wait_until_clean performs the trim internally and returns both the full
@@ -363,9 +363,22 @@ def process_page(
 
     # End-of-document check: must happen BEFORE compressing to avoid saving
     # a duplicate last page into the PDF.
+    # To rule out a slow page transition, we retry up to 2 times (with a
+    # delay between each) before declaring the document finished.
     if prev_md5 and current_md5 == prev_md5:
-        print("  Page identical to previous — end of document.")
-        return False, prev_md5, None
+        MAX_RETRIES = 2
+        for attempt in range(1, MAX_RETRIES + 1):
+            print(f"  Page identical to previous — waiting {cfg.delay}s before retry {attempt}/{MAX_RETRIES}...")
+            time.sleep(cfg.delay)
+            screenshot, trimmed, win_x, win_y = wait_until_clean(win, cfg, page_num)
+            current_md5 = image_md5(trimmed)
+            if current_md5 != prev_md5:
+                print(f"  Page changed after retry {attempt} — continuing.")
+                break
+        else:
+            # All retries confirmed the same page: we really are at the end.
+            print("  Page still identical after all retries — end of document.")
+            return False, prev_md5, None
 
     jpeg_bytes = compress_page(trimmed, cfg.jpeg_quality)
 
@@ -398,8 +411,8 @@ def split_pdf(output_path: str, step: int) -> None:
     Split a PDF into equal-sized chunks using pypdf (pure Python, no system tools).
 
     Chunk naming convention (1-based page numbers):
-      <base>_0001_0200.pdf   - full chunk
-      <base>_0201_end.pdf    - final partial chunk
+      <base>_0001_0200.pdf   – full chunk
+      <base>_0201_end.pdf    – final partial chunk
 
     The original PDF is left untouched.
     """
@@ -459,6 +472,7 @@ def save_pdf(pages_bytes: list[bytes], output_path: str) -> None:
     # append_images contains the remaining frames.
     images[0].save(
         output_path,
+        format="PDF",   # explicit format so Pillow doesn't rely on the file extension
         save_all=True,
         append_images=images[1:],
     )
@@ -483,12 +497,12 @@ def parse_args() -> Config:
                         help="Output PDF file (default: output.pdf)")
     parser.add_argument("--icon", default="arrow.png",
                         help="Template image of the 'next page' icon to click")
-    parser.add_argument("--delay", type=float, default=1.3,
+    parser.add_argument("--delay", type=float, default=0.3,
                         help="Seconds to wait after clicking before capturing the next page")
-    parser.add_argument("--max-pages", type=int, default=999,
+    parser.add_argument("--max-pages", type=int, default=2000,
                         help="Stop after this many pages even if the end is not detected")
     parser.add_argument("--quality", type=int, default=50,
-                        help="JPEG quality per page: 1 (smallest) - 95 (best), default 50")
+                        help="JPEG quality per page: 1 (smallest) – 95 (best), default 50")
     parser.add_argument("--trim-top",    type=int, default=140)
     parser.add_argument("--trim-bottom", type=int, default=90)
     parser.add_argument("--trim-left",   type=int, default=160)
@@ -499,8 +513,13 @@ def parse_args() -> Config:
                         help="Split the output PDF into chunks of N pages (0 = disabled)")
 
     args = parser.parse_args()
+    # Ensure the output file always has a .pdf extension, even if the user
+    # omitted it on the command line (e.g. "book" → "book.pdf").
+    output_path = args.output
+    if not output_path.lower().endswith(".pdf"):
+        output_path += ".pdf"
     return Config(
-        output_path=args.output,
+        output_path=output_path,
         icon_file=args.icon,
         delay=args.delay,
         max_pages=args.max_pages,
