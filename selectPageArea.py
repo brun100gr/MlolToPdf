@@ -3,7 +3,7 @@ import numpy as np
 from mss import mss
 
 # =========================
-# Funzione generica selezione
+# Generic selection function
 # =========================
 def select_rectangle(img, message):
     drawing = False
@@ -29,7 +29,7 @@ def select_rectangle(img, message):
             fx, fy = x, y
             done = True
 
-    # Finestra fullscreen
+    # Fullscreen window
     cv2.namedWindow(message, cv2.WINDOW_NORMAL)
     cv2.setWindowProperty(message, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
     cv2.setMouseCallback(message, draw)
@@ -46,7 +46,7 @@ def select_rectangle(img, message):
 
     cv2.destroyAllWindows()
 
-    # Normalizza coordinate
+    # Normalize coordinates
     x1, y1 = min(ix, fx), min(iy, fy)
     x2, y2 = max(ix, fx), max(iy, fy)
 
@@ -54,7 +54,7 @@ def select_rectangle(img, message):
 
 
 # =========================
-# Screenshot iniziale
+# Initial screenshot
 # =========================
 with mss() as sct:
     monitor = sct.monitors[1]
@@ -64,11 +64,11 @@ img = np.array(screenshot)
 img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
 
 # =========================
-# STEP 1 - Selezione pagina
+# STEP 1 - Page selection
 # =========================
-print("\nSTEP 1: Seleziona l'area della PAGINA (trascina il mouse)")
+print("\nSTEP 1: Select the PAGE area (drag the mouse)")
 
-x1, y1, x2, y2 = select_rectangle(img.copy(), "Seleziona AREA PAGINA")
+x1, y1, x2, y2 = select_rectangle(img.copy(), "Select PAGE AREA")
 
 page_vertices = [
     (x1, y1),
@@ -77,27 +77,27 @@ page_vertices = [
     (x1, y2)
 ]
 
-print("\nVertici pagina:")
+print("\nPage vertices:")
 for v in page_vertices:
     print(v)
 
 # =========================
-# STEP 2 - Selezione simbolo
+# STEP 2 - Symbol selection
 # =========================
-print("\nSTEP 2: Seleziona il SIMBOLO (trascina il mouse)")
+print("\nSTEP 2: Select the SYMBOL (drag the mouse)")
 
-sx1, sy1, sx2, sy2 = select_rectangle(img.copy(), "Seleziona SIMBOLO")
+sx1, sy1, sx2, sy2 = select_rectangle(img.copy(), "Select SYMBOL")
 
-# Calcolo centro
+# Compute center
 cx = (sx1 + sx2) // 2
 cy = (sy1 + sy2) // 2
 
-print("\nCentro simbolo:")
+print("\nSymbol center:")
 print((cx, cy))
 
 # =========================
-# RISULTATO FINALE
+# FINAL RESULT
 # =========================
-print("\n--- RISULTATO ---")
-print("Area pagina (vertici):", page_vertices)
-print("Centro simbolo:", (cx, cy))
+print("\n--- RESULT ---")
+print("Page area (vertices):", page_vertices)
+print("Symbol center:", (cx, cy))
