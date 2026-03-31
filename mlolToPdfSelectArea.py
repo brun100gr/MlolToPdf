@@ -9,7 +9,7 @@ Usage:
     python mlol_to_pdf.py book.pdf --page-area 160 140 1760 1010 --icon-center 1840 950
 
     # Additional options:
-    python mlol_to_pdf.py book.pdf --select --delay 1.3 --quality 50 --split 200
+    python mlol_to_pdf.py book.pdf --select --delay 0.4 --quality 50 --split 200
 
   --select          Interactively select the page area and icon centre before
                     starting. Launches a fullscreen OpenCV overlay.
@@ -66,7 +66,7 @@ class Config:
     icon_cx: int = 0
     icon_cy: int = 0
 
-    # Minimum confidence score (0–1) for template matching to accept a hit.
+    # Minimum confidence score (0-1) for template matching to accept a hit.
     match_threshold: float = 0.75
 
     # Minimum number of orange/yellow HSV pixels to consider an orange box present.
@@ -79,7 +79,7 @@ class Config:
     long_lines_min: int = 2
 
     # Seconds to wait between clicking the icon and capturing the next page.
-    delay: float = 1.3
+    delay: float = 0.4
 
     # Safety cap: stop after this many pages even if the end is not detected.
     max_pages: int = 2000
@@ -89,6 +89,10 @@ class Config:
 
     # When True, intermediate debug images are written to disk.
     debug: bool = False
+
+    # Seconds to wait after selection before starting the capture loop,
+    # giving the user time to bring the target window to the foreground.
+    start_delay: int = 10
 
     # If > 0, the final PDF is split into chunks of this many pages.
     split_pages: int = 0
@@ -197,8 +201,8 @@ def run_interactive_selection() -> tuple[tuple[int,int,int,int], tuple[int,int]]
       2. Draw a rectangle around the "next page" icon.
 
     Returns:
-        page_area   – (x1, y1, x2, y2) absolute screen coordinates of the page.
-        icon_center – (cx, cy) absolute screen coordinates of the icon centre.
+        page_area   - (x1, y1, x2, y2) absolute screen coordinates of the page.
+        icon_center - (cx, cy) absolute screen coordinates of the icon centre.
     """
     # Take the screenshot BEFORE opening any window to avoid capturing our own UI.
     print("Taking screenshot for selection overlay...")
@@ -261,7 +265,7 @@ def has_orange_box(image_np: np.ndarray, cfg: Config, debug_suffix: str = "") ->
     Detect the orange VirtualBox selection highlight in the page area.
 
     Strategy:
-      1. Convert to HSV. Orange #FFA500 → hue ~18–25 in OpenCV HSV.
+      1. Convert to HSV. Orange #FFA500 → hue ~18-25 in OpenCV HSV.
       2. Threshold to a binary mask of orange-ish pixels.
       3. Early-exit if pixel count is below minimum.
       4. Run Canny + HoughLinesP: a real rectangle produces long straight edges.
@@ -372,6 +376,7 @@ def process_page(
         cv2.imwrite(f"debug_page_{page_num}.png", cv2.cvtColor(page, cv2.COLOR_RGB2BGR))
 
     current_md5 = image_md5(page)
+    print(f"  MD5: {current_md5[:12]}...  prev: {prev_md5[:12] if prev_md5 else 'None'}")
 
     # End-of-document check with retries to tolerate slow page transitions.
     if prev_md5 and current_md5 == prev_md5:
@@ -406,8 +411,8 @@ def split_pdf(output_path: str, step: int) -> None:
     Split a PDF into equal-sized chunks using pypdf (pure Python).
 
     Naming convention:
-      <base>_0001_0200.pdf  – full chunk
-      <base>_0201_end.pdf   – final partial chunk
+      <base>_0001_0200.pdf  - full chunk
+      <base>_0201_end.pdf   - final partial chunk
     """
     base = Path(output_path).stem
     out_dir = Path(output_path).parent
@@ -487,14 +492,16 @@ def parse_args() -> Config:
                         help="Absolute screen coords of the icon centre (required with --page-area)")
 
     # --- Capture options ---
-    parser.add_argument("--delay", type=float, default=1.3,
+    parser.add_argument("--delay", type=float, default=0.4,
                         help="Seconds to wait after clicking before capturing the next page")
-    parser.add_argument("--max-pages", type=int, default=13,
+    parser.add_argument("--max-pages", type=int, default=2000,
                         help="Stop after this many pages even if end is not detected")
     parser.add_argument("--quality", type=int, default=50,
-                        help="JPEG quality: 1 (smallest) – 95 (best), default 50")
+                        help="JPEG quality: 1 (smallest) - 95 (best), default 50")
     parser.add_argument("--split", type=int, default=0, metavar="N",
                         help="Split output PDF into chunks of N pages (0 = disabled)")
+    parser.add_argument("--start-delay", type=int, default=10, metavar="N",
+                        help="Seconds to wait before starting capture (default: 10)")
     parser.add_argument("--debug", action="store_true",
                         help="Write intermediate debug images to disk")
 
@@ -527,6 +534,7 @@ def parse_args() -> Config:
         max_pages=args.max_pages,
         jpeg_quality=args.quality,
         split_pages=args.split,
+        start_delay=args.start_delay,
         debug=args.debug,
     )
 
@@ -540,6 +548,15 @@ def main() -> None:
 
     print(f"Page area:   ({cfg.page_x1}, {cfg.page_y1}) → ({cfg.page_x2}, {cfg.page_y2})")
     print(f"Icon centre: ({cfg.icon_cx}, {cfg.icon_cy})")
+
+    # Countdown so the user can bring the target window to the foreground.
+    if cfg.start_delay > 0:
+        print(f"\nBring the target window to the foreground — starting in {cfg.start_delay}s...")
+        for remaining in range(cfg.start_delay, 0, -1):
+            print(f"  {remaining}...", end="\r", flush=True)
+            time.sleep(1)
+        print("  Starting!       ")
+
     print("Starting capture...\n")
 
     pages: list[bytes] = []
