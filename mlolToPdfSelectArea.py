@@ -9,10 +9,10 @@ Usage:
     python mlol_to_pdf.py book.pdf --page-area 160 140 1760 1010 --icon-center 1840 950
 
     # Additional options:
-    python mlol_to_pdf.py book.pdf --select --delay 0.4 --quality 50 --split 200
+    python mlol_to_pdf.py book.pdf --select --delay 0.4 --quality 50 --split 200 --mode bw
 
   --select          Interactively select the page area and icon centre before
-                    starting. Launches a fullscreen OpenCV overlay.
+                    starting. Launches a fullscreen overlay.
   --page-area X1 Y1 X2 Y2
                     Absolute screen coordinates of the page content area
                     (top-left and bottom-right corners).
@@ -20,6 +20,7 @@ Usage:
                     Absolute screen coordinates of the centre of the
                     "next page" icon to click.
   --split N         After saving, split the PDF into chunks of N pages.
+  --mode MODE       Page compression: jpeg (default), jpeg-hq, bw.
 """
 
 from __future__ import annotations
@@ -84,7 +85,15 @@ class Config:
     # Safety cap: stop after this many pages even if the end is not detected.
     max_pages: int = 2000
 
+    # Compression mode for each page:
+    #   "jpeg"    - grayscale JPEG at jpeg_quality (default, small file).
+    #   "jpeg-hq" - grayscale JPEG at quality 85 (better text, larger file).
+    #   "bw"      - 1-bit black & white with Otsu thresholding (smallest
+    #               file, perfect text edges, no colour information).
+    mode: str = "jpeg"
+
     # Pillow JPEG quality per page (1 = smallest, 95 = best).
+    # Only used in "jpeg" mode; ignored in "jpeg-hq" and "bw".
     jpeg_quality: int = 50
 
     # When True, intermediate debug images are written to disk.
@@ -129,7 +138,7 @@ def _run_tk_selector(screenshot_pil, message: str) -> tuple[int, int, int, int]:
     root.attributes("-topmost", True)
     root.overrideredirect(True)
 
-    # Resize screenshot to match actual screen size if they differ
+    # Resize screenshot to match actual screen size if they differ.
     if screenshot_pil.width != sw or screenshot_pil.height != sh:
         print(f"  Resizing screenshot from {screenshot_pil.width}x{screenshot_pil.height} to {sw}x{sh}")
         screenshot_pil = screenshot_pil.resize((sw, sh), Image.LANCZOS)
@@ -215,7 +224,7 @@ def run_interactive_selection() -> tuple[tuple[int,int,int,int], tuple[int,int]]
     # --- Step 1: page area ---
     print("\nSTEP 1: Draw a rectangle around the PAGE CONTENT AREA, then release.")
     x1, y1, x2, y2 = _run_tk_selector(screenshot_pil, "STEP 1 — Select PAGE AREA")
-    print(f"  Page area: ({x1}, {y1}) → ({x2}, {y2})")
+    print(f"  Page area: ({x1}, {y1}) -> ({x2}, {y2})")
 
     # --- Step 2: icon ---
     print("\nSTEP 2: Draw a rectangle around the NEXT-PAGE ICON, then release.")
@@ -265,7 +274,7 @@ def has_orange_box(image_np: np.ndarray, cfg: Config, debug_suffix: str = "") ->
     Detect the orange VirtualBox selection highlight in the page area.
 
     Strategy:
-      1. Convert to HSV. Orange #FFA500 → hue ~18-25 in OpenCV HSV.
+      1. Convert to HSV. Orange #FFA500 -> hue ~18-25 in OpenCV HSV.
       2. Threshold to a binary mask of orange-ish pixels.
       3. Early-exit if pixel count is below minimum.
       4. Run Canny + HoughLinesP: a real rectangle produces long straight edges.
@@ -324,7 +333,7 @@ def wait_until_clean(cfg: Config, page_num: int) -> tuple[np.ndarray, np.ndarray
 
 def image_md5(image_np: np.ndarray, size: int = 128) -> str:
     """
-    Compute a perceptual fingerprint by downscaling to 128×128 grayscale.
+    Compute a perceptual fingerprint by downscaling to 128x128 grayscale.
     Used to detect when the document has looped back (= end of book).
     """
     small = cv2.resize(image_np, (size, size))
@@ -336,14 +345,29 @@ def image_md5(image_np: np.ndarray, size: int = 128) -> str:
 # Page compression
 # ---------------------------------------------------------------------------
 
-def compress_page(image_np: np.ndarray, quality: int) -> bytes:
+def compress_page(image_np: np.ndarray, cfg: Config) -> bytes:
     """
-    Convert a page image to grayscale JPEG bytes.
-    Returns raw bytes so the buffer can be immediately garbage-collected.
+    Compress a page image according to cfg.mode:
+
+      "jpeg"    - 8-bit grayscale JPEG at cfg.jpeg_quality.
+                  Good balance of size and quality.
+      "jpeg-hq" - 8-bit grayscale JPEG at quality 85.
+                  Visibly cleaner text, ~2x larger than "jpeg".
+      "bw"      - 1-bit black & white using Otsu thresholding.
+                  Virtually no artefacts on text pages; very small file.
+                  Loses all grey information (not ideal for photo pages).
     """
-    img = Image.fromarray(image_np).convert("L")
     buf = BytesIO()
-    img.save(buf, format="JPEG", quality=quality, optimize=True)
+    if cfg.mode == "bw":
+        # Convert to grayscale, then let Otsu find the best global threshold.
+        gray = cv2.cvtColor(image_np, cv2.COLOR_RGB2GRAY)
+        _, bw = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        img = Image.fromarray(bw).convert("1")  # 1-bit B&W
+        img.save(buf, format="PDF")             # Pillow encodes 1-bit as compact CCITT
+    else:
+        quality = 85 if cfg.mode == "jpeg-hq" else cfg.jpeg_quality
+        img = Image.fromarray(image_np).convert("L")
+        img.save(buf, format="JPEG", quality=quality, optimize=True)
     return buf.getvalue()
 
 
@@ -365,10 +389,10 @@ def process_page(
          selection, not fixed trim offsets).
       3. Hash and compare with previous page to detect end-of-document,
          with up to 2 retries to rule out slow transitions.
-      4. Compress the page to JPEG.
+      4. Compress the page according to cfg.mode.
       5. Click the pre-selected icon centre to advance.
 
-    Returns (success, current_md5, jpeg_bytes).
+    Returns (success, current_md5, page_bytes).
     """
     screenshot, page = wait_until_clean(cfg, page_num)
 
@@ -393,13 +417,13 @@ def process_page(
             print("  Page still identical after all retries — end of document.")
             return False, prev_md5, None
 
-    jpeg_bytes = compress_page(page, cfg.jpeg_quality)
+    page_bytes = compress_page(page, cfg)
 
     # Click the icon at the pre-selected absolute screen coordinates.
     print(f"  Click at ({cfg.icon_cx}, {cfg.icon_cy})")
     pyautogui.click(cfg.icon_cx, cfg.icon_cy)
 
-    return True, current_md5, jpeg_bytes
+    return True, current_md5, page_bytes
 
 
 # ---------------------------------------------------------------------------
@@ -438,7 +462,7 @@ def split_pdf(output_path: str, step: int) -> None:
         else:
             out_file = out_dir / f"{base}_{block_start_label:04d}_{end_label:04d}.pdf"
 
-        print(f"  Pages {block_start_label}-{end} → {out_file.name}")
+        print(f"  Pages {block_start_label}-{end} -> {out_file.name}")
         with open(out_file, "wb") as f:
             writer.write(f)
 
@@ -452,21 +476,38 @@ def split_pdf(output_path: str, step: int) -> None:
 # PDF saving
 # ---------------------------------------------------------------------------
 
-def save_pdf(pages_bytes: list[bytes], output_path: str) -> None:
-    """Assemble per-page JPEG bytes into a single PDF using Pillow."""
+def save_pdf(pages_bytes: list[bytes], output_path: str, mode: str = "jpeg") -> None:
+    """
+    Assemble per-page image bytes into a single PDF.
+
+    In "bw" mode each bytes object is already a single-page PDF (produced by
+    Pillow's 1-bit PDF encoder); we merge them with pypdf instead of Pillow,
+    which cannot append 1-bit PDF pages via save_all.
+    In "jpeg" and "jpeg-hq" modes we use Pillow's standard multi-image save.
+    """
     if not pages_bytes:
         print("No images to save.")
         return
 
-    images = [Image.open(BytesIO(b)) for b in pages_bytes]
-    images[0].save(
-        output_path,
-        format="PDF",
-        save_all=True,
-        append_images=images[1:],
-    )
+    if mode == "bw":
+        # Each item is a single-page PDF — merge with pypdf.
+        writer = PdfWriter()
+        for page_pdf in pages_bytes:
+            reader = PdfReader(BytesIO(page_pdf))
+            writer.add_page(reader.pages[0])
+        with open(output_path, "wb") as f:
+            writer.write(f)
+    else:
+        images = [Image.open(BytesIO(b)) for b in pages_bytes]
+        images[0].save(
+            output_path,
+            format="PDF",
+            save_all=True,
+            append_images=images[1:],
+        )
+
     size_kb = Path(output_path).stat().st_size // 1024
-    print(f"PDF saved: {output_path}  ({size_kb} KB, {len(images)} pages)")
+    print(f"PDF saved: {output_path}  ({size_kb} KB, {len(pages_bytes)} pages)")
 
 
 # ---------------------------------------------------------------------------
@@ -502,6 +543,14 @@ def parse_args() -> Config:
                         help="Split output PDF into chunks of N pages (0 = disabled)")
     parser.add_argument("--start-delay", type=int, default=10, metavar="N",
                         help="Seconds to wait before starting capture (default: 10)")
+    parser.add_argument("--mode", default="jpeg",
+                        choices=["jpeg", "jpeg-hq", "bw"],
+                        help=(
+                            "Page compression: "
+                            "'jpeg' = grayscale JPEG at --quality (default); "
+                            "'jpeg-hq' = grayscale JPEG at quality 85 (cleaner text); "
+                            "'bw' = 1-bit B&W via Otsu threshold (sharpest text, smallest file)"
+                        ))
     parser.add_argument("--debug", action="store_true",
                         help="Write intermediate debug images to disk")
 
@@ -535,6 +584,7 @@ def parse_args() -> Config:
         jpeg_quality=args.quality,
         split_pages=args.split,
         start_delay=args.start_delay,
+        mode=args.mode,
         debug=args.debug,
     )
 
@@ -546,8 +596,9 @@ def parse_args() -> Config:
 def main() -> None:
     cfg = parse_args()
 
-    print(f"Page area:   ({cfg.page_x1}, {cfg.page_y1}) → ({cfg.page_x2}, {cfg.page_y2})")
+    print(f"Page area:   ({cfg.page_x1}, {cfg.page_y1}) -> ({cfg.page_x2}, {cfg.page_y2})")
     print(f"Icon centre: ({cfg.icon_cx}, {cfg.icon_cy})")
+    print(f"Mode:        {cfg.mode}")
 
     # Countdown so the user can bring the target window to the foreground.
     if cfg.start_delay > 0:
@@ -567,10 +618,10 @@ def main() -> None:
         page_num += 1
         print(f"Page {page_num}...")
 
-        success, prev_md5, jpeg_bytes = process_page(cfg, prev_md5, page_num)
+        success, prev_md5, page_bytes = process_page(cfg, prev_md5, page_num)
 
-        if jpeg_bytes is not None:
-            pages.append(jpeg_bytes)
+        if page_bytes is not None:
+            pages.append(page_bytes)
 
         if not success:
             break
@@ -578,7 +629,7 @@ def main() -> None:
         time.sleep(cfg.delay)
 
     print(f"\nCapture completed. Total pages: {len(pages)}")
-    save_pdf(pages, cfg.output_path)
+    save_pdf(pages, cfg.output_path, cfg.mode)
 
     if cfg.split_pages > 0:
         print(f"\nSplitting into chunks of {cfg.split_pages} pages...")
