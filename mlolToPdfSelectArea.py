@@ -88,8 +88,9 @@ class Config:
     # Compression mode for each page:
     #   "jpeg"    - grayscale JPEG at jpeg_quality (default, small file).
     #   "jpeg-hq" - grayscale JPEG at quality 85 (better text, larger file).
-    #   "bw"      - 1-bit black & white with Otsu thresholding (smallest
-    #               file, perfect text edges, no colour information).
+    #   "bw"      - 1-bit B&W with Otsu thresholding (small file, fast).
+    #   "bw-hq"   - 1-bit B&W with upscale + sharpening + adaptive threshold
+    #               (best text quality, slightly larger file and slower).
     mode: str = "jpeg"
 
     # Pillow JPEG quality per page (1 = smallest, 95 = best).
@@ -216,10 +217,13 @@ def run_interactive_selection() -> tuple[tuple[int,int,int,int], tuple[int,int]]
     # Take the screenshot BEFORE opening any window to avoid capturing our own UI.
     print("Taking screenshot for selection overlay...")
     with mss() as sct:
-        monitor = sct.monitors[1]
+        # monitors[0] is the virtual bounding box covering ALL monitors combined.
+        # monitors[1], [2], ... are individual screens. Using [0] lets the user
+        # select areas on any monitor, not just the primary one.
+        monitor = sct.monitors[0]
         raw = sct.grab(monitor)
         screenshot_pil = Image.frombytes("RGB", (raw.width, raw.height), raw.rgb)
-    print(f"  Screenshot size: {screenshot_pil.width}x{screenshot_pil.height}")
+    print(f"  Screenshot size: {screenshot_pil.width}x{screenshot_pil.height} (all monitors)")
 
     # --- Step 1: page area ---
     print("\nSTEP 1: Draw a rectangle around the PAGE CONTENT AREA, then release.")
@@ -250,7 +254,9 @@ def screenshot_fullscreen() -> np.ndarray:
     Used each capture cycle to grab the current page.
     """
     with mss() as sct:
-        monitor = sct.monitors[1]
+        # Use monitors[0] (all monitors combined) so that coordinates selected
+        # interactively on any monitor match the capture coordinate space.
+        monitor = sct.monitors[0]
         raw = sct.grab(monitor)
         img = np.frombuffer(raw.rgb, dtype=np.uint8).reshape((raw.height, raw.width, 3))
     return img.copy()
@@ -345,6 +351,56 @@ def image_md5(image_np: np.ndarray, size: int = 128) -> str:
 # Page compression
 # ---------------------------------------------------------------------------
 
+def _binarize_simple(gray: np.ndarray) -> np.ndarray:
+    """
+    Otsu global thresholding.
+    Fast, works well on clean scans with uniform background.
+    """
+    _, bw = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    return bw
+
+
+def _binarize_hq(gray: np.ndarray) -> np.ndarray:
+    """
+    High-quality binarization pipeline for antialiased screen text:
+
+      1. Upscale 2x — gives the threshold more pixels to work with,
+         reducing the influence of antialiasing grey fringe.
+      2. Unsharp mask — amplifies edges so character strokes become
+         crisper before thresholding.
+      3. Adaptive threshold (Gaussian) — computes a local threshold for
+         each neighbourhood, handling uneven illumination and contrast
+         variations across the page better than a single global value.
+      4. Downscale back to original size — reduces file size while
+         keeping the clean edges produced at 2x resolution.
+    """
+    h, w = gray.shape
+
+    # Step 1: upscale 2x with high-quality interpolation
+    big = cv2.resize(gray, (w * 2, h * 2), interpolation=cv2.INTER_CUBIC)
+
+    # Step 2: unsharp mask (sharpen edges)
+    blurred = cv2.GaussianBlur(big, (0, 0), sigmaX=1.5)
+    sharpened = cv2.addWeighted(big, 1.8, blurred, -0.8, 0)
+
+    # Step 3: adaptive threshold — block size and C tuned for typical
+    # book typography at 2x screen resolution
+    bw_big = cv2.adaptiveThreshold(
+        sharpened, 255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY,
+        blockSize=31,   # neighbourhood size (must be odd); ~15px at 1x
+        C=10,           # constant subtracted from the mean; higher = more white
+    )
+
+    # Step 4: downscale back to original size
+    bw = cv2.resize(bw_big, (w, h), interpolation=cv2.INTER_AREA)
+
+    # Re-threshold after downscale to get a clean 1-bit result
+    _, bw = cv2.threshold(bw, 127, 255, cv2.THRESH_BINARY)
+    return bw
+
+
 def compress_page(image_np: np.ndarray, cfg: Config) -> bytes:
     """
     Compress a page image according to cfg.mode:
@@ -353,17 +409,18 @@ def compress_page(image_np: np.ndarray, cfg: Config) -> bytes:
                   Good balance of size and quality.
       "jpeg-hq" - 8-bit grayscale JPEG at quality 85.
                   Visibly cleaner text, ~2x larger than "jpeg".
-      "bw"      - 1-bit black & white using Otsu thresholding.
-                  Virtually no artefacts on text pages; very small file.
-                  Loses all grey information (not ideal for photo pages).
+      "bw"      - 1-bit B&W via Otsu global threshold.
+                  Fast; works well on clean, evenly-lit pages.
+      "bw-hq"   - 1-bit B&W via upscale + sharpen + adaptive threshold.
+                  Best text sharpness on antialiased screen captures;
+                  slightly slower and produces a marginally larger file.
     """
     buf = BytesIO()
-    if cfg.mode == "bw":
-        # Convert to grayscale, then let Otsu find the best global threshold.
+    if cfg.mode in ("bw", "bw-hq"):
         gray = cv2.cvtColor(image_np, cv2.COLOR_RGB2GRAY)
-        _, bw = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        bw = _binarize_hq(gray) if cfg.mode == "bw-hq" else _binarize_simple(gray)
         img = Image.fromarray(bw).convert("1")  # 1-bit B&W
-        img.save(buf, format="PDF")             # Pillow encodes 1-bit as compact CCITT
+        img.save(buf, format="PDF")             # Pillow encodes as compact CCITT
     else:
         quality = 85 if cfg.mode == "jpeg-hq" else cfg.jpeg_quality
         img = Image.fromarray(image_np).convert("L")
@@ -489,7 +546,7 @@ def save_pdf(pages_bytes: list[bytes], output_path: str, mode: str = "jpeg") -> 
         print("No images to save.")
         return
 
-    if mode == "bw":
+    if mode in ("bw", "bw-hq"):
         # Each item is a single-page PDF — merge with pypdf.
         writer = PdfWriter()
         for page_pdf in pages_bytes:
@@ -544,12 +601,13 @@ def parse_args() -> Config:
     parser.add_argument("--start-delay", type=int, default=10, metavar="N",
                         help="Seconds to wait before starting capture (default: 10)")
     parser.add_argument("--mode", default="jpeg",
-                        choices=["jpeg", "jpeg-hq", "bw"],
+                        choices=["jpeg", "jpeg-hq", "bw", "bw-hq"],
                         help=(
                             "Page compression: "
                             "'jpeg' = grayscale JPEG at --quality (default); "
                             "'jpeg-hq' = grayscale JPEG at quality 85 (cleaner text); "
-                            "'bw' = 1-bit B&W via Otsu threshold (sharpest text, smallest file)"
+                            "'bw' = 1-bit B&W via Otsu threshold (fast); "
+                            "'bw-hq' = 1-bit B&W via upscale+sharpen+adaptive threshold (best quality)"
                         ))
     parser.add_argument("--debug", action="store_true",
                         help="Write intermediate debug images to disk")
