@@ -85,17 +85,7 @@ class Config:
     # Safety cap: stop after this many pages even if the end is not detected.
     max_pages: int = 2000
 
-    # Compression mode for each page:
-    #   "jpeg"    - grayscale JPEG at jpeg_quality (default, small file).
-    #   "jpeg-hq" - grayscale JPEG at quality 85 (better text, larger file).
-    #   "bw"      - 1-bit B&W with Otsu thresholding (small file, fast).
-    #   "bw-hq"   - 1-bit B&W with upscale + sharpening + adaptive threshold
-    #               (best text quality, slightly larger file and slower).
-    mode: str = "jpeg"
 
-    # Pillow JPEG quality per page (1 = smallest, 95 = best).
-    # Only used in "jpeg" mode; ignored in "jpeg-hq" and "bw".
-    jpeg_quality: int = 50
 
     # When True, intermediate debug images are written to disk.
     debug: bool = False
@@ -351,80 +341,16 @@ def image_md5(image_np: np.ndarray, size: int = 128) -> str:
 # Page compression
 # ---------------------------------------------------------------------------
 
-def _binarize_simple(gray: np.ndarray) -> np.ndarray:
+
+def compress_page(image_np: np.ndarray) -> bytes:
     """
-    Otsu global thresholding.
-    Fast, works well on clean scans with uniform background.
+    Convert a page image to lossless PNG bytes.
+    PNG is lossless so there are no JPEG compression artefacts on text.
+    Returns raw bytes so the buffer can be immediately garbage-collected.
     """
-    _, bw = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    return bw
-
-
-def _binarize_hq(gray: np.ndarray) -> np.ndarray:
-    """
-    High-quality binarization pipeline for antialiased screen text:
-
-      1. Upscale 2x — gives the threshold more pixels to work with,
-         reducing the influence of antialiasing grey fringe.
-      2. Unsharp mask — amplifies edges so character strokes become
-         crisper before thresholding.
-      3. Adaptive threshold (Gaussian) — computes a local threshold for
-         each neighbourhood, handling uneven illumination and contrast
-         variations across the page better than a single global value.
-      4. Downscale back to original size — reduces file size while
-         keeping the clean edges produced at 2x resolution.
-    """
-    h, w = gray.shape
-
-    # Step 1: upscale 2x with high-quality interpolation
-    big = cv2.resize(gray, (w * 2, h * 2), interpolation=cv2.INTER_CUBIC)
-
-    # Step 2: unsharp mask (sharpen edges)
-    blurred = cv2.GaussianBlur(big, (0, 0), sigmaX=1.5)
-    sharpened = cv2.addWeighted(big, 1.8, blurred, -0.8, 0)
-
-    # Step 3: adaptive threshold — block size and C tuned for typical
-    # book typography at 2x screen resolution
-    bw_big = cv2.adaptiveThreshold(
-        sharpened, 255,
-        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-        cv2.THRESH_BINARY,
-        blockSize=31,   # neighbourhood size (must be odd); ~15px at 1x
-        C=10,           # constant subtracted from the mean; higher = more white
-    )
-
-    # Step 4: downscale back to original size
-    bw = cv2.resize(bw_big, (w, h), interpolation=cv2.INTER_AREA)
-
-    # Re-threshold after downscale to get a clean 1-bit result
-    _, bw = cv2.threshold(bw, 127, 255, cv2.THRESH_BINARY)
-    return bw
-
-
-def compress_page(image_np: np.ndarray, cfg: Config) -> bytes:
-    """
-    Compress a page image according to cfg.mode:
-
-      "jpeg"    - 8-bit grayscale JPEG at cfg.jpeg_quality.
-                  Good balance of size and quality.
-      "jpeg-hq" - 8-bit grayscale JPEG at quality 85.
-                  Visibly cleaner text, ~2x larger than "jpeg".
-      "bw"      - 1-bit B&W via Otsu global threshold.
-                  Fast; works well on clean, evenly-lit pages.
-      "bw-hq"   - 1-bit B&W via upscale + sharpen + adaptive threshold.
-                  Best text sharpness on antialiased screen captures;
-                  slightly slower and produces a marginally larger file.
-    """
+    img = Image.fromarray(image_np)
     buf = BytesIO()
-    if cfg.mode in ("bw", "bw-hq"):
-        gray = cv2.cvtColor(image_np, cv2.COLOR_RGB2GRAY)
-        bw = _binarize_hq(gray) if cfg.mode == "bw-hq" else _binarize_simple(gray)
-        img = Image.fromarray(bw).convert("1")  # 1-bit B&W
-        img.save(buf, format="PDF")             # Pillow encodes as compact CCITT
-    else:
-        quality = 85 if cfg.mode == "jpeg-hq" else cfg.jpeg_quality
-        img = Image.fromarray(image_np).convert("L")
-        img.save(buf, format="JPEG", quality=quality, optimize=True)
+    img.save(buf, format="PNG", optimize=True)
     return buf.getvalue()
 
 
@@ -474,7 +400,7 @@ def process_page(
             print("  Page still identical after all retries — end of document.")
             return False, prev_md5, None
 
-    page_bytes = compress_page(page, cfg)
+    page_bytes = compress_page(page)
 
     # Click the icon at the pre-selected absolute screen coordinates.
     print(f"  Click at ({cfg.icon_cx}, {cfg.icon_cy})")
@@ -533,36 +459,22 @@ def split_pdf(output_path: str, step: int) -> None:
 # PDF saving
 # ---------------------------------------------------------------------------
 
-def save_pdf(pages_bytes: list[bytes], output_path: str, mode: str = "jpeg") -> None:
+def save_pdf(pages_bytes: list[bytes], output_path: str) -> None:
     """
-    Assemble per-page image bytes into a single PDF.
-
-    In "bw" mode each bytes object is already a single-page PDF (produced by
-    Pillow's 1-bit PDF encoder); we merge them with pypdf instead of Pillow,
-    which cannot append 1-bit PDF pages via save_all.
-    In "jpeg" and "jpeg-hq" modes we use Pillow's standard multi-image save.
+    Assemble per-page PNG bytes into a single PDF using Pillow.
+    PNG is lossless so text quality is preserved exactly as captured.
     """
     if not pages_bytes:
         print("No images to save.")
         return
 
-    if mode in ("bw", "bw-hq"):
-        # Each item is a single-page PDF — merge with pypdf.
-        writer = PdfWriter()
-        for page_pdf in pages_bytes:
-            reader = PdfReader(BytesIO(page_pdf))
-            writer.add_page(reader.pages[0])
-        with open(output_path, "wb") as f:
-            writer.write(f)
-    else:
-        images = [Image.open(BytesIO(b)) for b in pages_bytes]
-        images[0].save(
-            output_path,
-            format="PDF",
-            save_all=True,
-            append_images=images[1:],
-        )
-
+    images = [Image.open(BytesIO(b)) for b in pages_bytes]
+    images[0].save(
+        output_path,
+        format="PDF",
+        save_all=True,
+        append_images=images[1:],
+    )
     size_kb = Path(output_path).stat().st_size // 1024
     print(f"PDF saved: {output_path}  ({size_kb} KB, {len(pages_bytes)} pages)")
 
@@ -594,21 +506,10 @@ def parse_args() -> Config:
                         help="Seconds to wait after clicking before capturing the next page")
     parser.add_argument("--max-pages", type=int, default=2000,
                         help="Stop after this many pages even if end is not detected")
-    parser.add_argument("--quality", type=int, default=50,
-                        help="JPEG quality: 1 (smallest) - 95 (best), default 50")
     parser.add_argument("--split", type=int, default=0, metavar="N",
                         help="Split output PDF into chunks of N pages (0 = disabled)")
     parser.add_argument("--start-delay", type=int, default=10, metavar="N",
                         help="Seconds to wait before starting capture (default: 10)")
-    parser.add_argument("--mode", default="jpeg",
-                        choices=["jpeg", "jpeg-hq", "bw", "bw-hq"],
-                        help=(
-                            "Page compression: "
-                            "'jpeg' = grayscale JPEG at --quality (default); "
-                            "'jpeg-hq' = grayscale JPEG at quality 85 (cleaner text); "
-                            "'bw' = 1-bit B&W via Otsu threshold (fast); "
-                            "'bw-hq' = 1-bit B&W via upscale+sharpen+adaptive threshold (best quality)"
-                        ))
     parser.add_argument("--debug", action="store_true",
                         help="Write intermediate debug images to disk")
 
@@ -639,10 +540,8 @@ def parse_args() -> Config:
         icon_cy=icon_center[1],
         delay=args.delay,
         max_pages=args.max_pages,
-        jpeg_quality=args.quality,
         split_pages=args.split,
         start_delay=args.start_delay,
-        mode=args.mode,
         debug=args.debug,
     )
 
@@ -656,8 +555,6 @@ def main() -> None:
 
     print(f"Page area:   ({cfg.page_x1}, {cfg.page_y1}) -> ({cfg.page_x2}, {cfg.page_y2})")
     print(f"Icon centre: ({cfg.icon_cx}, {cfg.icon_cy})")
-    print(f"Mode:        {cfg.mode}")
-
     # Countdown so the user can bring the target window to the foreground.
     if cfg.start_delay > 0:
         print(f"\nBring the target window to the foreground — starting in {cfg.start_delay}s...")
@@ -687,7 +584,7 @@ def main() -> None:
         time.sleep(cfg.delay)
 
     print(f"\nCapture completed. Total pages: {len(pages)}")
-    save_pdf(pages, cfg.output_path, cfg.mode)
+    save_pdf(pages, cfg.output_path)
 
     if cfg.split_pages > 0:
         print(f"\nSplitting into chunks of {cfg.split_pages} pages...")
