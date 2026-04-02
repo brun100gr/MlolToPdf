@@ -92,7 +92,7 @@ class Config:
 
     # Seconds to wait after selection before starting the capture loop,
     # giving the user time to bring the target window to the foreground.
-    start_delay: int = 10
+    start_delay: int = 2
 
     # If > 0, the final PDF is split into chunks of this many pages.
     split_pages: int = 0
@@ -508,8 +508,8 @@ def parse_args() -> Config:
                         help="Stop after this many pages even if end is not detected")
     parser.add_argument("--split", type=int, default=0, metavar="N",
                         help="Split output PDF into chunks of N pages (0 = disabled)")
-    parser.add_argument("--start-delay", type=int, default=10, metavar="N",
-                        help="Seconds to wait before starting capture (default: 10)")
+    parser.add_argument("--start-delay", type=int, default=2, metavar="N",
+                        help="Countdown seconds after Enter before capture starts (default: 2)")
     parser.add_argument("--debug", action="store_true",
                         help="Write intermediate debug images to disk")
 
@@ -555,13 +555,15 @@ def main() -> None:
 
     print(f"Page area:   ({cfg.page_x1}, {cfg.page_y1}) -> ({cfg.page_x2}, {cfg.page_y2})")
     print(f"Icon centre: ({cfg.icon_cx}, {cfg.icon_cy})")
-    # Countdown so the user can bring the target window to the foreground.
+    # Wait for the user to bring the target window to the foreground,
+    # then start a short countdown so they have time to release the keyboard.
+    input("\nBring the target window to the foreground, then press Enter to start...")
     if cfg.start_delay > 0:
-        print(f"\nBring the target window to the foreground — starting in {cfg.start_delay}s...")
+        print(f"Starting in {cfg.start_delay}s...")
         for remaining in range(cfg.start_delay, 0, -1):
             print(f"  {remaining}...", end="\r", flush=True)
             time.sleep(1)
-        print("  Starting!       ")
+        print("  Go!             ")
 
     print("Starting capture...\n")
 
